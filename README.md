@@ -24,24 +24,29 @@ configured Git authentication. Do not put access tokens in notebooks or reposito
 import table2gmns as tg
 
 net = tg.getNetFromFile(
-    "bike.gpkg",
+    "prepared_bike.gpkg",
     mode_types="bike",
-    link_field_map={"geometry": "geometry", "direction": "DIRECTION"},
-    direction_map={"B": "both", "F": "forward", "T": "reverse"},
+    link_field_map={"geometry": "geometry", "directed": "ONEWAY"},
 )
 tg.fillLinkAttributesWithDefaultValues(net, default_speed=True, default_capacity=True)
 tg.outputNetToCSV(net, output_folder="bike_network")
 ```
 
-The direction codes above are an **example mapping, not a built-in convention**.
-`forward` follows geometry vertex order; `reverse` reverses both endpoints and geometry;
-`both` emits two directed links. Confirm how your source encodes travel direction before
-choosing a map. Cardinal/non-cardinal or compass direction labels are not inherently
-the same as geometry forward/reverse. Unknown codes raise an error rather than becoming
-bidirectional. Missing direction values require an explicit `default_direction`.
+The mapped `directed` field uses **0 = two-way, 1 = one-way in geometry vertex order**.
+Numeric/Boolean values and numeric CSV strings are accepted. Every output row is
+directed (`directed=1`); a two-way input produces forward and reverse rows, with
+both node IDs and geometry reversed for the second row.
 
-For an input with no direction column and known bidirectional lines, explicitly use
-`default_direction="both"` instead of a direction map.
+Dataset-specific codes (B/F/T, compass directions, -1, etc.) must be normalized
+**before conversion**. Reverse the geometry and swap mapped endpoint IDs when the
+allowed travel direction opposes vertex order. Do not infer vertex order from
+cardinal/non-cardinal labels without checking the source data.
+
+For an input with no direction column and known two-way lines, explicitly use
+`default_directed=0` instead. Use `default_directed=1` for already directed input.
+Missing flags need an explicit default; unknown codes always raise an error.
+Only geometry and directed need mapping (or the directed default). Speed, lanes,
+capacity, IDs and other mappings are optional.
 
 `LTS`, `LANE`, `SPEED` and other source attributes are retained. The example does not
 use motor-traffic `SPEED` or `LANE` as bicycle speed or lane count. The bicycle example
@@ -58,31 +63,28 @@ net = tg.getNetFromFile(
     link_field_map={
         "geometry": "geometry",
         "link_id": "SEGMENT_ID",
-        "direction": "ONEWAY",
+        "directed": "ONEWAY",
         "lanes": "LANES_AB",
         "free_speed": "SPEED_AB",
         "capacity": "CAP_AB",
         "name": "STREET",
         "link_type_name": "ROAD_TYPE",
     },
-    direction_map={0: "both", 1: "forward", -1: "reverse"},
     reverse_field_map={"lanes": "LANES_BA", "free_speed": "SPEED_BA", "capacity": "CAP_BA"},
     speed_unit="mph",
 )
 tg.outputNetToCSV(net, "road_network")
 ```
 
-Input codes retain their types. CSVs are read as strings to preserve leading zeros,
-so a numeric-looking CSV direction code uses string keys, e.g. `{"0": "both"}`.
-Mapped numeric attributes are converted explicitly after reading.
+CSVs are read as strings to preserve leading zeros in identifiers.
+Mapped numeric attributes and the 0/1 directed flag are converted explicitly after reading.
 
 ## CSV with WKT, or an in-memory table
 
 ```python
 net = tg.getNetFromFile(
     "links.csv",
-    link_field_map={"geometry": "WKT", "direction": "DIR", "free_speed": "SPD"},
-    direction_map={"AB": "forward", "BA": "reverse", "ABBA": "both"},
+    link_field_map={"geometry": "WKT", "directed": "ONEWAY", "free_speed": "SPD"},
     source_crs="EPSG:4326",
     speed_unit="km/h",
 )
@@ -106,7 +108,7 @@ An optional node file supplies point geometry and attributes:
 net = tg.getNetFromFile(
     "links.csv",
     link_field_map={"geometry": "WKT", "from_node_id": "A", "to_node_id": "B"},
-    default_direction="forward",
+    default_directed=1,
     source_crs="EPSG:26917",
     node_file="nodes.csv",
     node_field_map={"node_id": "N", "x_coord": "X", "y_coord": "Y", "zone_id": "TAZ"},

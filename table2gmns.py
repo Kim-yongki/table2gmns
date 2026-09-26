@@ -8,19 +8,18 @@ import pandas as pd
 from pyproj import CRS
 from shapely.geometry import Point
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 __all__ = ["Network", "getNetFromFile", "fillLinkAttributesWithDefaultValues", "outputNetToCSV"]
 _LENGTH = {"m": 1.0, "km": 1000.0, "ft": 0.3048, "us-ft": 1200 / 3937, "mile": 1609.344}
 _SPEED = {"km/h": 1.0, "mph": 1.609344, "m/s": 3.6}
-_DIRECTIONS = {"forward", "reverse", "both"}
 _MODES = {"auto": "drive", "bike": "bike", "walk": "walk"}
 _DEFAULTS = {
     "lanes": {"auto": 1, "bike": 1, "walk": 1},
     "free_speed": {"auto": 50.0, "bike": 19.312128, "walk": 4.828032},
     "capacity": {"auto": 1800.0, "bike": 1500.0, "walk": 1500.0},
 }
-_GENERATED = {"geometry", "x_coord", "y_coord", "directed", "dir_flag", "source_link_id", "source_part", "source_direction"}
-_CORE = _GENERATED | {"link_id", "from_node_id", "to_node_id", "length", "lanes", "free_speed", "capacity", "link_type", "link_type_name", "allowed_uses", "direction"}
+_GENERATED = {"geometry", "x_coord", "y_coord", "dir_flag", "source_link_id", "source_part", "source_directed"}
+_CORE = _GENERATED | {"link_id", "from_node_id", "to_node_id", "length", "lanes", "free_speed", "capacity", "link_type", "link_type_name", "allowed_uses", "directed"}
 
 
 @dataclass
@@ -94,18 +93,16 @@ def _number(value, label):
     return value
 
 
-def _direction(value, mapping, default):
+def _directed(value, default):
     if pd.isna(value):
-        result = default
-    elif mapping is None:
-        result = value
-    else:
-        if value not in mapping:
-            raise ValueError(f"Unmapped direction value {value!r}; add it to direction_map.")
-        result = mapping[value]
-    if result not in _DIRECTIONS:
-        raise ValueError("Map direction codes to 'forward', 'reverse' or 'both', or set default_direction.")
-    return result
+        value = default
+    try:
+        flag = float(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError("directed must be 0 (two-way) or 1 (one-way in geometry order).") from error
+    if flag not in (0, 1):
+        raise ValueError("directed must be 0 (two-way) or 1 (one-way in geometry order).")
+    return int(flag)
 
 
 def _source_attributes(row, geometry_name, reserved):
@@ -126,7 +123,7 @@ def _source_attributes(row, geometry_name, reserved):
 
 def getNetFromFile(
     filepath, mode_types="auto", *, link_field_map,
-    direction_map=None, default_direction=None, reverse_field_map=None,
+    default_directed=None, reverse_field_map=None,
     node_file=None, node_field_map=None, source_crs=None, node_source_crs=None, metric_crs=None,
     length_unit="m", speed_unit="km/h", node_precision=2,
     lanes_are_total=False, capacity_per_lane=False, keep_source_columns=True,
@@ -136,8 +133,9 @@ def getNetFromFile(
     link_field_map is required and must include {'geometry': source_column}.
     Maps are {output field: source column}. CSV/plain tables need source_crs.
 
-    Map direction and its codes, or explicitly set default_direction. Forward
-    follows geometry vertex order; no dataset-specific code meaning is guessed.
+    Map directed (0 = two-way, 1 = one-way), or set default_directed.
+    One-way links follow geometry vertex order. Normalize source codes and
+    reverse geometry when needed before calling this converter.
     Map both from_node_id/to_node_id to retain existing topology, optionally
     providing a point node_file and node_field_map. Otherwise endpoint rounding
     in a metric CRS generates node IDs. Interior crossings are NOT split.
@@ -155,10 +153,8 @@ def getNetFromFile(
         raise ValueError(f"length_unit: {list(_LENGTH)}; speed_unit: {list(_SPEED)}")
     if not isinstance(node_precision, int) or isinstance(node_precision, bool) or node_precision < 0:
         raise ValueError("node_precision must be a nonnegative integer.")
-    if default_direction is not None and default_direction not in _DIRECTIONS:
-        raise ValueError("default_direction must be 'forward', 'reverse' or 'both'.")
-    if direction_map is not None and not set(direction_map.values()) <= _DIRECTIONS:
-        raise ValueError("direction_map values must be 'forward', 'reverse' or 'both'.")
+    if default_directed is not None:
+        _directed(default_directed, None)
     if not isinstance(link_field_map, dict) or "geometry" not in link_field_map:
         raise ValueError("link_field_map must explicitly map geometry to its source column.")
     source = _read(filepath, source_crs, link_field_map["geometry"])
@@ -166,10 +162,10 @@ def getNetFromFile(
     reverse_fields = _mapping(source, reverse_field_map, "reverse_field_map")
     if set(fields) & (_GENERATED - {"geometry"}):
         raise ValueError(f"Cannot map generated fields: {sorted(set(fields) & (_GENERATED - {'geometry'}))}")
-    if set(reverse_fields) & (_GENERATED | {"direction", "link_id", "from_node_id", "to_node_id", "length"}):
-        raise ValueError("reverse_field_map may override attributes, not IDs, geometry, length or direction.")
-    if "direction" not in fields and default_direction is None:
-        raise ValueError("Map a direction column or explicitly set default_direction.")
+    if set(reverse_fields) & (_GENERATED | {"directed", "link_id", "from_node_id", "to_node_id", "length"}):
+        raise ValueError("reverse_field_map may override attributes, not IDs, geometry, length or directed.")
+    if "directed" not in fields and default_directed is None:
+        raise ValueError("Map a directed column or explicitly set default_directed.")
     has_ids = {"from_node_id", "to_node_id"} <= set(fields)
     if bool({"from_node_id", "to_node_id"} & set(fields)) != has_ids:
         raise ValueError("Map both from_node_id and to_node_id, or neither.")
@@ -200,18 +196,18 @@ def getNetFromFile(
         segments = [shape] if shape.geom_type == "LineString" else list(shape.geoms)
         if len(segments) > 1 and has_ids:
             raise ValueError("Multipart links need separate from/to IDs; split them first.")
-        direction = _direction(row[fields["direction"]] if "direction" in fields else None, direction_map, default_direction)
+        directed = _directed(row[fields["directed"]] if "directed" in fields else None, default_directed)
         for part_number, segment in enumerate(segments):
             if segment.length <= 0 or not all(math.isfinite(v) for xy in segment.coords for v in xy[:2]):
                 raise ValueError(f"Feature {source_row} has zero length or invalid coordinates.")
-            parts.append((source_row, part_number, row, segment, segment.length / shape.length, direction))
+            parts.append((source_row, part_number, row, segment, segment.length / shape.length, directed))
 
     def endpoint_key(point):
         return tuple(round(float(v), node_precision) for v in point[:2])
 
     starts = [endpoint_key(p[3].coords[0]) for p in parts]
     ends = [endpoint_key(p[3].coords[-1]) for p in parts]
-    if any(a == b and not p[3].is_ring for a, b, p in zip(starts, ends, parts)):
+    if any(a == b and p[3].length <= math.sqrt(2) * 10 ** (-node_precision) for a, b, p in zip(starts, ends, parts)):
         raise ValueError("Endpoint rounding collapses a link; increase node_precision.")
     positions = {}
     if has_ids:
@@ -258,9 +254,9 @@ def getNetFromFile(
 
     lonlat = gpd.GeoSeries([p[3] for p in parts], crs=metric_crs).to_crs(4326)
     forward_rows, reverse_rows = [], []
-    for i, (source_row, part_number, row, geometry, fraction, direction) in enumerate(parts):
+    for i, (source_row, part_number, row, geometry, fraction, directed) in enumerate(parts):
         raw = _source_attributes(row, source.geometry.name, _CORE | set(fields) | set(reverse_fields)) if keep_source_columns else {}
-        attributes = {target: row[column] for target, column in fields.items() if target not in {"geometry", "direction", "link_id", "from_node_id", "to_node_id", "length"}}
+        attributes = {target: row[column] for target, column in fields.items() if target not in {"geometry", "directed", "link_id", "from_node_id", "to_node_id", "length"}}
         length = _number(row[fields["length"]], "length") * _LENGTH[length_unit] * fraction if "length" in fields else geometry.length
         if not math.isfinite(length) or length <= 0:
             raise ValueError(f"Feature {source_row} requires positive length.")
@@ -270,9 +266,9 @@ def getNetFromFile(
                 "lanes": float("nan"), "free_speed": float("nan"), "capacity": float("nan"), **attributes,
                 "source_link_id": row[fields["link_id"]] if "link_id" in fields else source_row,
                 "source_part": part_number,
-                "source_direction": row[fields["direction"]] if "direction" in fields else direction,
-                "directed": True, "dir_flag": 1}
-        for reverse in ([False, True] if direction == "both" else [direction == "reverse"]):
+                "source_directed": directed,
+                "directed": 1, "dir_flag": 1}
+        for reverse in ([False, True] if directed == 0 else [False]):
             link = base.copy()
             if reverse:
                 link.update({target: row[column] for target, column in reverse_fields.items()})
@@ -281,7 +277,7 @@ def getNetFromFile(
             for column in ("lanes", "free_speed", "capacity"):
                 link[column] = _number(link[column], column)
             link["free_speed"] *= _SPEED[speed_unit]
-            if lanes_are_total and direction == "both" and not pd.isna(link["lanes"]):
+            if lanes_are_total and directed == 0 and not pd.isna(link["lanes"]):
                 if link["lanes"] % 2:
                     raise ValueError("Odd total lane counts need explicit directional lane fields.")
                 link["lanes"] /= 2
