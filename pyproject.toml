@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "table2gmns"
+version = "0.1.0"
+description = "Explicit field mapping from spatial tables and files to GMNS"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["geopandas>=1.0", "pandas>=2.2", "shapely>=2.0", "pyproj>=3.6"]
+
+[tool.setuptools]
+py-modules = ["table2gmns"]
