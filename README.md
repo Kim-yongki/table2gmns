@@ -4,10 +4,6 @@ Convert spatial tables into GMNS `node.csv` and `link.csv` with **explicit colum
 Inputs: Shapefile, GeoPackage, GeoDataFrame, or a CSV/DataFrame containing WKT line geometry.
 Optional point-node files/tables can supply existing node IDs and zone attributes.
 
-The API follows the read / fill defaults / export pattern of `osm2gmns`.
-Source attributes are preserved by default. A field named `SPEED`, `LANE`, or `DIRECTION`
-is not automatically interpreted as a GMNS field: choose the mapping yourself.
-
 ## Install
 
 ```bash
